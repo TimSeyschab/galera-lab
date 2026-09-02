@@ -1,0 +1,39 @@
+# OpenTofu / Terraform working data
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.plan
+crash.log
+crash.*.log
+
+# Local variable files with real values
+terraform.tfvars
+*.tfvars
+*.auto.tfvars
+*.tfvars.json
+*.auto.tfvars.json
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Ansible local artifacts
+**/__pycache__/
+*.retry
+.ansible/
+.artifacts/
+
+# Credentials and local client configuration
+*.pem
+*.key
+*.p12
+*.pfx
+id_*
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+
+# IDEs
+.idea/

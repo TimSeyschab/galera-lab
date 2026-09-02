@@ -1,0 +1,55 @@
+mariadb:
+  rootPasswordSecretKeyRef:
+    name: mariadb-root
+    key: root-password
+    generate: false
+
+  replicas: 3
+
+  galera:
+    enabled: true
+
+  storage:
+    size: 1Gi
+    storageClassName: local-path
+
+  service:
+    type: ClusterIP
+
+  primaryService:
+    type: ClusterIP
+
+  metrics:
+    enabled: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 768Mi
+
+  nodeSelector:
+    lab.galera/role: worker
+
+  affinity:
+    antiAffinityEnabled: false
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/instance: mariadb-cluster
+                app.kubernetes.io/name: mariadb
+            topologyKey: kubernetes.io/hostname
+
+  topologySpreadConstraints:
+    - maxSkew: 1
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/instance: mariadb-cluster
+          app.kubernetes.io/name: mariadb
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway

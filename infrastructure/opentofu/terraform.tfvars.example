@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars for local use. Do not commit real values.
+
+ssh_key_name = "my-existing-hcloud-ssh-key"
+admin_cidr   = "203.0.113.10/32"
+
+# Defaults shown for clarity. Override only when the cost and placement impact is intentional.
+location    = "nbg1"
+server_type = "cx23"
+image       = "ubuntu-24.04"
+
+# Add worker entries here to expand the infrastructure. Every entry creates a paid server.
+node_definitions = {
+  k3s-admin = {
+    role       = "admin"
+    private_ip = "10.20.0.2"
+  }
+  k3s-worker-1 = {
+    role       = "worker"
+    private_ip = "10.20.0.3"
+  }
+  k3s-worker-2 = {
+    role       = "worker"
+    private_ip = "10.20.0.4"
+  }
+}

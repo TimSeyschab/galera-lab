@@ -1,0 +1,61 @@
+---
+- name: Install packages required by K3s and Ansible
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - python3
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Detect the interface carrying the private node address
+  ansible.builtin.shell: "ip -o -4 addr show | awk '$4 ~ /^{{ private_ip | replace('.', '\\.') }}\\// {print $2; exit}'"
+  args:
+    executable: /bin/bash
+  register: private_interface
+  changed_when: false
+
+- name: Select the unconfigured private interface
+  ansible.builtin.set_fact:
+    k3s_private_interface: "{{ (ansible_facts.interfaces | difference([ansible_default_ipv4.interface, 'lo'])) | first | default('') }}"
+  when: private_interface.stdout | trim | length == 0
+
+- name: Require a private interface device
+  ansible.builtin.assert:
+    that:
+      - (private_interface.stdout | trim | length > 0) or (k3s_private_interface | default('') | length > 0)
+    fail_msg: "Could not find a private network interface for private_ip={{ private_ip }}."
+
+- name: Configure the private interface with Netplan
+  ansible.builtin.copy:
+    dest: /etc/netplan/60-galera-private.yaml
+    mode: "0600"
+    content: |
+      network:
+        version: 2
+        ethernets:
+          {{ k3s_private_interface }}:
+            dhcp4: true
+  when: private_interface.stdout | trim | length == 0
+  notify: Apply netplan
+
+- name: Flush handlers before validating the private address
+  ansible.builtin.meta: flush_handlers
+
+- name: Recheck the private address after Netplan configuration
+  ansible.builtin.shell: "ip -o -4 addr show | awk '$4 ~ /^{{ private_ip | replace('.', '\\.') }}\\// {print $2; exit}'"
+  args:
+    executable: /bin/bash
+  register: private_interface_after_netplan
+  changed_when: false
+
+- name: Require a detected private interface
+  ansible.builtin.assert:
+    that:
+      - private_interface_after_netplan.stdout | trim | length > 0
+    fail_msg: "Could not find a network interface for private_ip={{ private_ip }}."
+
+- name: Store the private interface for K3s
+  ansible.builtin.set_fact:
+    k3s_private_interface: "{{ private_interface_after_netplan.stdout | trim }}"

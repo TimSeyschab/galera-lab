@@ -1,0 +1,28 @@
+---
+- name: Retrieve the K3s kubeconfig from the admin node
+  hosts: k3s_admin
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the admin kubeconfig without logging its content
+      ansible.builtin.slurp:
+        src: /etc/rancher/k3s/k3s.yaml
+      register: admin_kubeconfig
+      no_log: true
+
+    - name: Create the local artifact directory
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../../.artifacts"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Store the kubeconfig locally with restricted permissions
+      ansible.builtin.copy:
+        content: "{{ admin_kubeconfig.content | b64decode }}"
+        dest: "{{ playbook_dir }}/../../.artifacts/kubeconfig"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true

@@ -1,0 +1,33 @@
+---
+- name: Require a pinned K3s version and generated join token
+  ansible.builtin.assert:
+    that:
+      - k3s_version | length > 0
+      - hostvars[groups['k3s_admin'][0]].k3s_join_token | default('') | length > 0
+    fail_msg: "The K3s server token is unavailable; install the admin first."
+
+- name: Check whether K3s agent is installed
+  ansible.builtin.stat:
+    path: /etc/systemd/system/k3s-agent.service
+  register: k3s_agent_service
+
+- name: Install the K3s agent
+  ansible.builtin.shell: |
+    curl --fail --silent --show-error --location https://get.k3s.io | \
+      INSTALL_K3S_VERSION={{ k3s_version | quote }} \
+      K3S_URL=https://{{ hostvars[groups['k3s_admin'][0]].private_ip }}:{{ k3s_api_port }} \
+      K3S_TOKEN={{ hostvars[groups['k3s_admin'][0]].k3s_join_token | quote }} \
+      sh -s - agent \
+        --node-ip {{ private_ip | quote }} \
+        --flannel-iface {{ k3s_private_interface | quote }}
+  args:
+    executable: /bin/bash
+  when: not k3s_agent_service.stat.exists
+  no_log: true
+  notify: Restart k3s agent
+
+- name: Ensure K3s agent is enabled and started
+  ansible.builtin.systemd:
+    name: k3s-agent
+    enabled: true
+    state: started
