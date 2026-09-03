@@ -74,7 +74,7 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 
 Grafana ist unter <http://127.0.0.1:3000> erreichbar. Benutzername ist `admin`; das Passwort entspricht `GRAFANA_ADMIN_PASSWORD`.
 
-Das Dashboard `MariaDB Galera Lab` zeigt Cluster-Groesse, Ready-Status, Flow Control, Replikations-Queues, InnoDB-Buffer-Pool, Connections und Queries.
+Das Dashboard `MariaDB Galera Lab` zeigt Cluster-Groesse, Ready-/Connected-Members, Pod-Restarts, Flow Control, Replikations-Queues, Apply-/Commit-Fenster, Writesets, Node-CPU, Node-Load, Node-Memory, InnoDB-Buffer-Pool, Connections und Queries.
 
 ### Pods und Cluster pruefen
 
@@ -103,13 +103,33 @@ Logs lesen:
 kubectl -n mariadb logs mariadb-cluster-0 -c mariadb --tail=100
 ```
 
+### Ausfallszenarien messen
+
+Die README-Todos sind als reproduzierbare Szenarien unter `scenarios/` umgesetzt. Das operative Playbook fuer Ausloesen, Metriken, manuelle Analyse und Reparatur liegt in `scenarios/PLAYBOOK.md`.
+
+```bash
+make scenarios-list
+make scenario-pod
+make scenario-process
+make scenario-node-single
+make scenario-node-double
+make scenario-network
+make scenario-overload-flow-control
+make scenario-export
+```
+
+Die Ergebnisse werden vor dem Loeschen der Umgebung unter `.artifacts/scenarios/` als JSON exportiert. Enthalten sind Pod- und Node-Zustand, Galera-Status, Quorum-Indikatoren, IST-/SST-Hinweise aus Logs, Wiederanlaufzeit und Probe-Fehlerrate.
+
+`scenario-overload-flow-control` ueberlastet gezielt einen Worker und erzeugt parallel Schreiblast, damit Flow-Control-Verhalten sichtbar wird. Node- und Netzwerk-Szenarien greifen per SSH auf bestehende Worker zu, veraendern aber keine Hetzner-Ressourcen.
+
 ### Vollstaendiger Abbau
 
 ```bash
+make scenario-export
 make stop
 ```
 
-`make stop` ist ein Alias fuer `make destroy`. Der Destroy-Plan wird zuerst angezeigt, danach fragt OpenTofu vor dem Loeschen. Entfernt werden Server, Netzwerk, Firewall und Placement Group. Damit verschwinden auch alle MariaDB-Daten auf den Test-VMs.
+`make stop` fuehrt `make destroy` aus und entfernt danach lokale Kubeconfig-, lab-spezifische Known-Hosts- und OpenTofu-State-Artefakte. Der Destroy-Plan wird zuerst angezeigt, danach fragt OpenTofu vor dem Loeschen. Entfernt werden Server, Netzwerk, Firewall und Placement Group. Damit verschwinden auch alle MariaDB-Daten auf den Test-VMs. Szenario-Exports unter `.artifacts/scenarios/` bleiben lokal erhalten.
 
 ## 2. Befehle nach Kontext
 
@@ -140,16 +160,31 @@ Versionierte Cluster-Konfiguration:
 - `cluster/monitoring/values.yaml`
 - `cluster/monitoring/galera-dashboard.json`
 
+### Szenarien: `scenarios/`
+
+| Befehl | Zweck |
+| --- | --- |
+| `make scenarios-list` | verfuegbare Ausfallszenarien anzeigen |
+| `make scenario-pod` | Galera-Pod loeschen und Recovery messen |
+| `make scenario-process` | MariaDB-Prozess in einem Pod beenden und Recovery messen |
+| `make scenario-node-single` | Ausfall des einfach belegten Workers simulieren |
+| `make scenario-node-double` | Ausfall des doppelt belegten Workers simulieren |
+| `make scenario-network` | privaten Netzwerkverkehr eines Workers blockieren |
+| `make scenario-overload-flow-control` | Worker-Ueberlast mit Schreiblast fuer Flow-Control-Nachstellung |
+| `make scenario-export` | aktuellen Cluster-, Galera- und Event-Zustand exportieren |
+
 ### Infrastruktur: `infrastructure/opentofu/`
 
 | Befehl | Zweck |
 | --- | --- |
 | `make tofu-tfvars` | Lokale `terraform.tfvars` mit dynamischer Admin-IP erzeugen |
+| `make tofu-refresh-admin-cidr` | bestehende lokale `admin_cidr` auf die aktuelle oeffentliche IPv4 aktualisieren |
 | `make tofu-fmt` | OpenTofu-Dateien pruefen |
 | `make tofu-init` | Provider ohne Backend initialisieren |
 | `make tofu-validate` | OpenTofu-Konfiguration validieren |
 | `make tofu-plan` | Infrastrukturplan anzeigen |
 | `make tofu-check` | Formatierung, Init, Validierung und optional TFLint |
+| `make clean-local` | lokale Kubeconfig-, lab-spezifische Known-Hosts-, State-, Plan- und Crash-Artefakte entfernen |
 | `tofu -chdir=infrastructure/opentofu apply` | Infrastruktur nach Plan anwenden |
 | `tofu -chdir=infrastructure/opentofu destroy` | Infrastruktur nach Plan entfernen |
 
@@ -245,11 +280,15 @@ galera-lab/
 │   ├── mariadb-operator/
 │   └── monitoring/
 └── scenarios/
+    ├── Makefile
+    ├── PLAYBOOK.md
+    └── scripts/
 ```
 
 ## Todo
 
-- [ ] Pod-, Prozess-, Node- und Netzwerkausfaelle automatisieren.
-- [ ] Ausfall des einfach und doppelt belegten Workers vergleichen.
-- [ ] IST, SST, Quorum, Wiederanlaufzeit und Fehlerrate messen.
-- [ ] Ergebnisse vor dem Loeschen der Umgebung exportieren.
+- [x] Pod-, Prozess-, Node- und Netzwerkausfaelle automatisieren.
+- [x] Ausfall des einfach und doppelt belegten Workers vergleichen.
+- [x] IST, SST, Quorum, Wiederanlaufzeit und Fehlerrate messen.
+- [x] Ergebnisse vor dem Loeschen der Umgebung exportieren.
+- [x] Worker-Ueberlast mit Schreiblast fuer Flow-Control-Probleme simulieren.

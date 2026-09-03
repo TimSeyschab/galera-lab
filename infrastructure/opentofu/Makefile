@@ -3,7 +3,7 @@ TFVARS := terraform.tfvars
 SSH_KEY_NAME ?= hetzner-galera-lab (laptop)
 ADMIN_IP_URL ?= https://api.ipify.org
 
-.PHONY: tofu-tfvars tofu-fmt tofu-init tofu-validate tofu-plan plan-destroy apply destroy tofu-check tflint
+.PHONY: tofu-tfvars tofu-refresh-admin-cidr tofu-fmt tofu-init tofu-validate tofu-plan plan-destroy apply destroy tofu-check tflint
 
 tofu-tfvars:
 	@set -eu; \
@@ -24,6 +24,27 @@ tofu-tfvars:
 	} > "$(TFVARS)"; \
 	chmod 600 "$(TFVARS)"; \
 	echo "Created $(TFVARS) with SSH key '$(SSH_KEY_NAME)' and current public IPv4 /32."
+
+tofu-refresh-admin-cidr:
+	@set -eu; \
+	if [ ! -f "$(TFVARS)" ]; then \
+		$(MAKE) tofu-tfvars; \
+		exit 0; \
+	fi; \
+	admin_ip="$$(curl -fsSL "$(ADMIN_IP_URL)")"; \
+	case "$$admin_ip" in \
+		""|*[!0-9.]*) echo "Could not determine a valid public IPv4 from $(ADMIN_IP_URL)" >&2; exit 1 ;; \
+	esac; \
+	tmp="$$(mktemp)"; \
+	if grep -q '^admin_cidr[[:space:]]*=' "$(TFVARS)"; then \
+		sed -E "s#^admin_cidr[[:space:]]*=.*#admin_cidr   = \"$$admin_ip/32\"#" "$(TFVARS)" > "$$tmp"; \
+	else \
+		cp "$(TFVARS)" "$$tmp"; \
+		printf '\nadmin_cidr   = "%s/32"\n' "$$admin_ip" >> "$$tmp"; \
+	fi; \
+	mv "$$tmp" "$(TFVARS)"; \
+	chmod 600 "$(TFVARS)"; \
+	echo "Updated $(TFVARS) admin_cidr to $$admin_ip/32."
 
 tofu-fmt:
 	$(TOFU) fmt -check -recursive

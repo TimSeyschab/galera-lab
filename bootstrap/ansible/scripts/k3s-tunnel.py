@@ -9,9 +9,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 TOFU_DIR = ROOT / "infrastructure" / "opentofu"
+ARTIFACT_DIR = ROOT / ".artifacts"
+KNOWN_HOSTS = ARTIFACT_DIR / "known_hosts"
 
 
 def main():
+    ARTIFACT_DIR.mkdir(mode=0o700, exist_ok=True)
     result = subprocess.run(
         ["tofu", f"-chdir={TOFU_DIR}", "output", "-json"],
         cwd=ROOT,
@@ -31,6 +34,10 @@ def main():
         "-N",
         "-o",
         "ExitOnForwardFailure=yes",
+        "-o",
+        f"UserKnownHostsFile={KNOWN_HOSTS}",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
         "-L",
         f"6443:{private_ip}:6443",
         f"root@{public_ip}",

@@ -7,11 +7,12 @@ export KUBECONFIG
 OPENTOFU_DIR := infrastructure/opentofu
 ANSIBLE_DIR := bootstrap/ansible
 CLUSTER_DIR := cluster
+SCENARIOS_DIR := scenarios
 KUBECTL ?= kubectl
 ANSIBLE_PRIVATE_KEY_FILE ?= $(HOME)/.ssh/hetzner_galera_lab
 export ANSIBLE_PRIVATE_KEY_FILE
 
-.PHONY: start preflight stop destroy tofu-tfvars tofu-fmt tofu-init tofu-validate tofu-plan tofu-check tflint ansible-inventory ansible-check ansible-bootstrap ansible-kubeconfig k3s-tunnel cluster-repos cluster-operator cluster-monitoring cluster-galera cluster-dashboard cluster-install cluster-verify
+.PHONY: start preflight stop destroy clean-local tofu-tfvars tofu-refresh-admin-cidr tofu-fmt tofu-init tofu-validate tofu-plan tofu-check tflint ansible-inventory ansible-check ansible-bootstrap ansible-kubeconfig k3s-tunnel cluster-repos cluster-operator cluster-monitoring cluster-galera cluster-dashboard cluster-install cluster-verify scenarios-list scenario scenario-pod scenario-process scenario-network scenario-node-single scenario-node-double scenario-overload-flow-control scenario-export
 
 preflight:
 	@test -n "$${HCLOUD_TOKEN:-}" || (echo "HCLOUD_TOKEN must be exported" >&2; exit 1)
@@ -20,7 +21,7 @@ preflight:
 	@test -r "$(ANSIBLE_PRIVATE_KEY_FILE)" || (echo "SSH private key is not readable: $(ANSIBLE_PRIVATE_KEY_FILE)" >&2; exit 1)
 
 start: preflight
-	$(MAKE) tofu-tfvars
+	$(MAKE) tofu-refresh-admin-cidr
 	$(MAKE) tofu-check
 	$(MAKE) tofu-plan
 	$(MAKE) -C $(OPENTOFU_DIR) apply
@@ -41,15 +42,25 @@ start: preflight
 	$(MAKE) cluster-install; \
 	$(MAKE) cluster-verify
 
-stop: destroy
+stop: destroy clean-local
 
 destroy:
 	@echo "This destroys the Hetzner infrastructure and all data on the lab nodes."
 	$(MAKE) -C $(OPENTOFU_DIR) plan-destroy
 	$(MAKE) -C $(OPENTOFU_DIR) destroy
 
+clean-local:
+	@echo "Removing local kubeconfig and OpenTofu state artifacts; keeping scenario exports."
+	rm -f .artifacts/kubeconfig .artifacts/kubeconfig.* .artifacts/known_hosts .artifacts/known_hosts.* kubeconfig kubeconfig.*
+	rm -f $(OPENTOFU_DIR)/terraform.tfstate $(OPENTOFU_DIR)/terraform.tfstate.backup
+	rm -f $(OPENTOFU_DIR)/*.tfplan $(OPENTOFU_DIR)/*.plan $(OPENTOFU_DIR)/crash.log $(OPENTOFU_DIR)/crash.*.log
+	rm -f $(OPENTOFU_DIR)/.terraform.tfstate.lock.info
+
 tofu-tfvars:
 	$(MAKE) -C $(OPENTOFU_DIR) tofu-tfvars
+
+tofu-refresh-admin-cidr:
+	$(MAKE) -C $(OPENTOFU_DIR) tofu-refresh-admin-cidr
 
 tofu-fmt:
 	$(MAKE) -C $(OPENTOFU_DIR) tofu-fmt
@@ -104,3 +115,30 @@ cluster-install:
 
 cluster-verify:
 	$(MAKE) -C $(CLUSTER_DIR) verify
+
+scenarios-list:
+	$(MAKE) -C $(SCENARIOS_DIR) list
+
+scenario:
+	$(MAKE) -C $(SCENARIOS_DIR) run
+
+scenario-pod:
+	$(MAKE) -C $(SCENARIOS_DIR) pod
+
+scenario-process:
+	$(MAKE) -C $(SCENARIOS_DIR) process
+
+scenario-network:
+	$(MAKE) -C $(SCENARIOS_DIR) network
+
+scenario-node-single:
+	$(MAKE) -C $(SCENARIOS_DIR) node-single
+
+scenario-node-double:
+	$(MAKE) -C $(SCENARIOS_DIR) node-double
+
+scenario-overload-flow-control:
+	$(MAKE) -C $(SCENARIOS_DIR) overload-flow-control
+
+scenario-export:
+	$(MAKE) -C $(SCENARIOS_DIR) export
