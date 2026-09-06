@@ -1,3 +1,4 @@
+# Public-interface policy: allow inbound SSH only. No outbound allow-list is defined.
 resource "hcloud_firewall" "ssh" {
   name   = "${var.project_name}-ssh"
   labels = local.common_labels
@@ -10,4 +11,3 @@ resource "hcloud_firewall" "ssh" {
     description = "SSH from admin CIDR only"
   }
 }
-

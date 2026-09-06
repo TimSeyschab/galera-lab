@@ -1,5 +1,5 @@
 variable "project_name" {
-  description = "Name prefix and project label for all Phase 1 Hetzner Cloud resources."
+  description = "Name prefix for network, firewall and placement group, and project label on supported resources. Does not create/select a Hetzner project or prefix node names."
   type        = string
   default     = "galera-lab"
 
@@ -10,7 +10,7 @@ variable "project_name" {
 }
 
 variable "ssh_key_name" {
-  description = "Name of the existing Hetzner Cloud SSH key to attach to all nodes. The private key is not managed here."
+  description = "Existing SSH key name in the Hetzner project selected by HCLOUD_TOKEN; resolved in servers.tf and injected at server creation. Changing the resolved key can replace servers. No private key is managed here."
   type        = string
 
   validation {
@@ -20,7 +20,7 @@ variable "ssh_key_name" {
 }
 
 variable "admin_cidr" {
-  description = "Single IPv4 or IPv6 CIDR allowed to reach SSH on the public interfaces, for example 203.0.113.10/32."
+  description = "Single source CIDR for public inbound TCP/22 in firewall.tf, e.g. 203.0.113.10/32. The Make helper generates IPv4 /32; direct input can use IPv6, but the current inventory connects over public IPv4."
   type        = string
 
   validation {
@@ -33,7 +33,7 @@ variable "admin_cidr" {
 }
 
 variable "location" {
-  description = "Hetzner Cloud location for all servers. Use locations such as nbg1, fsn1, hel1, ash, hil, or sin."
+  description = "Location for every server in servers.tf, default nbg1. Must match the subnet network_zone and offer the chosen server_type/image. A location change requires server replacement."
   type        = string
   default     = "nbg1"
 
@@ -44,7 +44,7 @@ variable "location" {
 }
 
 variable "server_type" {
-  description = "Hetzner Cloud server type for all nodes. The default cx23 keeps Phase 1 cost low."
+  description = "Compute type for all admins and workers, default cx23. Changes affect every server's capacity and cost and can power servers off during resizing; this is not a rolling Galera upgrade."
   type        = string
   default     = "cx23"
 
@@ -55,7 +55,7 @@ variable "server_type" {
 }
 
 variable "image" {
-  description = "Operating system image for all nodes."
+  description = "Creation image name or ID for every server, default ubuntu-24.04. Changing this replaces servers rather than upgrading their installed OS; package/bootstrap configuration belongs to Ansible."
   type        = string
   default     = "ubuntu-24.04"
 
@@ -66,7 +66,7 @@ variable "image" {
 }
 
 variable "network_cidr" {
-  description = "Private Hetzner Cloud network CIDR for the lab."
+  description = "Address range of hcloud_network.private in network.tf, default 10.20.0.0/16. Use IPv4 for this lab and coordinate subnet, node IPs and scenario CIDRs; this is not the K3s Pod/Service CIDR."
   type        = string
   default     = "10.20.0.0/16"
 
@@ -77,7 +77,7 @@ variable "network_cidr" {
 }
 
 variable "subnet_cidr" {
-  description = "Private subnet CIDR used by the three lab nodes."
+  description = "Cloud subnet within network_cidr, default 10.20.0.0/24. All node_definitions.private_ip values must belong to it. Containment and reserved addresses are not checked by this variable's syntax validation."
   type        = string
   default     = "10.20.0.0/24"
 
@@ -88,7 +88,7 @@ variable "subnet_cidr" {
 }
 
 variable "network_zone" {
-  description = "Hetzner Cloud network zone for the private subnet."
+  description = "Routing zone of the cloud subnet in network.tf, default eu-central. Must contain the selected server location; this relationship is not checked by the allow-list validation."
   type        = string
   default     = "eu-central"
 
@@ -99,7 +99,7 @@ variable "network_zone" {
 }
 
 variable "node_definitions" {
-  description = "Explicit mapping of K3s node names to roles and fixed private IPv4 addresses. Add worker entries to expand the cluster; each entry creates a paid server."
+  description = "Complete map of stable server names/for_each keys to role (admin/worker) and intended private IPv4 address. Exactly one admin and at least two workers. Each added key creates a paid server; removing/renaming keys can destroy servers. Overrides replace the entire map."
   type = map(object({
     role       = string
     private_ip = string
@@ -124,6 +124,7 @@ variable "node_definitions" {
       length(var.node_definitions) >= 3 &&
       length([for node in values(var.node_definitions) : node if node.role == "admin"]) == 1 &&
       length([for node in values(var.node_definitions) : node if node.role == "worker"]) >= 2 &&
+      # cidrhost checks parseability, not IPv4 family or subnet membership.
       alltrue([
         for node in values(var.node_definitions) :
         contains(["admin", "worker"], node.role) && can(cidrhost("${node.private_ip}/32", 0))

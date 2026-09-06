@@ -1,6 +1,10 @@
 # Copy to terraform.tfvars for local use. Do not commit real values.
+# Reference: README.md; technical background: TECHNIK.md (in this directory).
+# HCLOUD_TOKEN belongs in the exported environment, never in this file.
 
+# Required: an existing public-key object in the token's Hetzner project.
 ssh_key_name = "my-existing-hcloud-ssh-key"
+# Documentation-only address: replace with your actual SSH source CIDR.
 admin_cidr   = "203.0.113.10/32"
 
 # Defaults shown for clarity. Override only when the cost and placement impact is intentional.
@@ -8,7 +12,15 @@ location    = "nbg1"
 server_type = "cx23"
 image       = "ubuntu-24.04"
 
+# Network settings must agree with the fixed node IPs below and scenario CIDRs.
+project_name = "galera-lab"
+network_cidr = "10.20.0.0/16"
+subnet_cidr  = "10.20.0.0/24"
+network_zone = "eu-central"
+
 # Add worker entries here to expand the infrastructure. Every entry creates a paid server.
+# This is the COMPLETE map, not a patch merged into the default map in variables.tf.
+# Keep keys stable: deleting or renaming one can delete its VM and local database data.
 node_definitions = {
   k3s-admin = {
     role       = "admin"
