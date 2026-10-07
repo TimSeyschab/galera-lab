@@ -12,7 +12,7 @@ KUBECTL ?= kubectl
 ANSIBLE_PRIVATE_KEY_FILE ?= $(HOME)/.ssh/hetzner_galera_lab
 export ANSIBLE_PRIVATE_KEY_FILE
 
-.PHONY: start preflight stop destroy clean-local tofu-tfvars tofu-refresh-admin-cidr tofu-fmt tofu-init tofu-validate tofu-plan tofu-check tflint ansible-inventory ansible-check ansible-bootstrap ansible-kubeconfig k3s-tunnel cluster-repos cluster-operator cluster-monitoring cluster-galera cluster-dashboard cluster-install cluster-verify scenarios-list scenario scenario-pod scenario-process scenario-network scenario-node-single scenario-node-double scenario-overload-flow-control scenario-export
+.PHONY: start preflight stop destroy clean-local tofu-tfvars tofu-refresh-admin-cidr tofu-fmt tofu-init tofu-validate tofu-plan tofu-check tflint ansible-inventory ansible-check ansible-bootstrap ansible-kubeconfig k3s-tunnel cluster-repos cluster-operator cluster-monitoring cluster-galera cluster-dashboard cluster-install cluster-verify scenarios-list scenario scenario-pod scenario-process scenario-network scenario-network-double scenario-network-degrade scenario-node-single scenario-node-double scenario-overload-flow-control scenario-certification-conflict scenario-export
 
 preflight:
 	@test -n "$${HCLOUD_TOKEN:-}" || (echo "HCLOUD_TOKEN must be exported" >&2; exit 1)
@@ -131,6 +131,12 @@ scenario-process:
 scenario-network:
 	$(MAKE) -C $(SCENARIOS_DIR) network
 
+scenario-network-double:
+	$(MAKE) -C $(SCENARIOS_DIR) network-double
+
+scenario-network-degrade:
+	$(MAKE) -C $(SCENARIOS_DIR) network-degrade
+
 scenario-node-single:
 	$(MAKE) -C $(SCENARIOS_DIR) node-single
 
@@ -139,6 +145,9 @@ scenario-node-double:
 
 scenario-overload-flow-control:
 	$(MAKE) -C $(SCENARIOS_DIR) overload-flow-control
+
+scenario-certification-conflict:
+	$(MAKE) -C $(SCENARIOS_DIR) certification-conflict
 
 scenario-export:
 	$(MAKE) -C $(SCENARIOS_DIR) export

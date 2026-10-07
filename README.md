@@ -114,13 +114,16 @@ make scenario-process
 make scenario-node-single
 make scenario-node-double
 make scenario-network
+make scenario-network-double
+make scenario-network-degrade
 make scenario-overload-flow-control
+make scenario-certification-conflict
 make scenario-export
 ```
 
 Die Ergebnisse werden vor dem Loeschen der Umgebung unter `.artifacts/scenarios/` als JSON exportiert. Enthalten sind Pod- und Node-Zustand, Galera-Status, Quorum-Indikatoren, IST-/SST-Hinweise aus Logs, Wiederanlaufzeit und Probe-Fehlerrate.
 
-`scenario-overload-flow-control` ueberlastet gezielt einen Worker und erzeugt parallel Schreiblast, damit Flow-Control-Verhalten sichtbar wird. Node- und Netzwerk-Szenarien greifen per SSH auf bestehende Worker zu, veraendern aber keine Hetzner-Ressourcen.
+`scenario-pod` loescht einen einzelnen Galera-Pod und zeigt Kubernetes-Recreation, StatefulSet-Identitaet, PVC-Wiederverwendung und Galera-Rejoin; die vertiefte Studienhilfe liegt in `scenarios/pod-delete.md`. `scenario-network-double` isoliert den doppelt belegten Worker und macht das Quorum-Risiko des Zwei-Worker-Layouts mit Netzwerkfehlern sichtbar. `scenario-network-degrade` fuegt dem privaten Worker-Interface Latenz und Paketverlust hinzu und entfernt diese Stoerung nach der Messung automatisch. `scenario-overload-flow-control` ueberlastet gezielt einen Worker und erzeugt parallel Schreiblast, damit Flow-Control-Verhalten sichtbar wird; die vertiefte Studienhilfe liegt in `scenarios/overload-flow-control.md`. `scenario-certification-conflict` erzeugt konkurrierende Writes gegen mehrere Galera-Member und misst Zertifizierungskonflikte. Node- und Netzwerk-Szenarien greifen per SSH auf bestehende Worker zu, veraendern aber keine Hetzner-Ressourcen.
 
 ### Vollstaendiger Abbau
 
@@ -170,7 +173,10 @@ Versionierte Cluster-Konfiguration:
 | `make scenario-node-single` | Ausfall des einfach belegten Workers simulieren |
 | `make scenario-node-double` | Ausfall des doppelt belegten Workers simulieren |
 | `make scenario-network` | privaten Netzwerkverkehr eines Workers blockieren |
+| `make scenario-network-double` | privaten Netzwerkverkehr des doppelt belegten Workers blockieren |
+| `make scenario-network-degrade` | privaten Netzwerkverkehr mit Latenz und Paketverlust degradieren |
 | `make scenario-overload-flow-control` | Worker-Ueberlast mit Schreiblast fuer Flow-Control-Nachstellung |
+| `make scenario-certification-conflict` | konkurrierende Galera-Writes fuer Zertifizierungskonflikte erzeugen |
 | `make scenario-export` | aktuellen Cluster-, Galera- und Event-Zustand exportieren |
 
 ### Infrastruktur: `infrastructure/opentofu/`
@@ -284,11 +290,3 @@ galera-lab/
     ├── PLAYBOOK.md
     └── scripts/
 ```
-
-## Todo
-
-- [x] Pod-, Prozess-, Node- und Netzwerkausfaelle automatisieren.
-- [x] Ausfall des einfach und doppelt belegten Workers vergleichen.
-- [x] IST, SST, Quorum, Wiederanlaufzeit und Fehlerrate messen.
-- [x] Ergebnisse vor dem Loeschen der Umgebung exportieren.
-- [x] Worker-Ueberlast mit Schreiblast fuer Flow-Control-Probleme simulieren.

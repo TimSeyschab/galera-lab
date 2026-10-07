@@ -28,6 +28,7 @@ MARIADB_LABEL = os.environ.get(
 )
 NETWORK_COMMENT = "galera-lab-scenario-network"
 OVERLOAD_LABEL = "galera-lab-scenario-overload"
+CONFLICT_LABEL = "galera-lab-scenario-conflict"
 
 
 class ScenarioError(RuntimeError):
@@ -219,6 +220,7 @@ def galera_status() -> dict[str, Any]:
             "'wsrep_flow_control_sent','wsrep_flow_control_recv',"
             "'wsrep_local_recv_queue','wsrep_local_send_queue',"
             "'wsrep_cert_deps_distance','wsrep_apply_window','wsrep_commit_window',"
+            "'wsrep_local_cert_failures','wsrep_local_bf_aborts',"
             "'wsrep_replicated','wsrep_received','wsrep_replicated_bytes','wsrep_received_bytes');"
         )
         result = kubectl(
@@ -446,6 +448,15 @@ def public_ip_for_node(node: str) -> str:
         raise ScenarioError(f"No public IPv4 found for node {node}") from error
 
 
+def private_ip_for_node(node: str) -> str:
+    outputs = tofu_output()
+    addresses = output_value(outputs, "server_private_ipv4")
+    try:
+        return addresses[node]
+    except KeyError as error:
+        raise ScenarioError(f"No private IPv4 found for node {node}") from error
+
+
 def induce_pod_delete(context: dict[str, Any]) -> None:
     pod = pod_on_worker("single")
     context["target_pod"] = pod
@@ -482,13 +493,14 @@ def induce_node_stop(context: dict[str, Any], worker_kind: str) -> None:
     ssh(public_ip_for_node(node), "systemctl stop k3s-agent")
 
 
-def induce_network_isolate(context: dict[str, Any]) -> None:
-    node = target_worker("single")
+def induce_network_isolate(context: dict[str, Any], worker_kind: str) -> None:
+    node = target_worker(worker_kind)
     context["target_node"] = node
-    outputs = tofu_output()
-    private_addresses = output_value(outputs, "server_private_ipv4")
     network = os.environ.get("SCENARIO_NETWORK_CIDR", "10.20.0.0/16")
-    private_ip = private_addresses[node]
+    private_ip = private_ip_for_node(node)
+    context["target_kind"] = worker_kind
+    context["private_ip"] = private_ip
+    context["network_cidr"] = network
     command = (
         "iptables -I INPUT 1 -s {network} -m comment --comment {comment} -j DROP; "
         "iptables -I OUTPUT 1 -d {network} -m comment --comment {comment} -j DROP; "
@@ -499,6 +511,53 @@ def induce_network_isolate(context: dict[str, Any]) -> None:
         private_ip=shlex.quote(private_ip),
     )
     ssh(public_ip_for_node(node), command)
+
+
+def induce_network_degrade(context: dict[str, Any]) -> None:
+    worker_kind = os.environ.get("SCENARIO_NETEM_WORKER", "single")
+    if worker_kind not in {"single", "double"}:
+        raise ScenarioError("SCENARIO_NETEM_WORKER must be 'single' or 'double'")
+    delay_ms = int(os.environ.get("SCENARIO_NETEM_DELAY_MS", "250"))
+    loss_percent = int(os.environ.get("SCENARIO_NETEM_LOSS_PERCENT", "10"))
+    if delay_ms < 0:
+        raise ScenarioError("SCENARIO_NETEM_DELAY_MS must be greater than or equal to 0")
+    if not 0 <= loss_percent <= 100:
+        raise ScenarioError("SCENARIO_NETEM_LOSS_PERCENT must be between 0 and 100")
+    node = target_worker(worker_kind)
+    private_ip = private_ip_for_node(node)
+    context.update(
+        {
+            "target_node": node,
+            "target_kind": worker_kind,
+            "private_ip": private_ip,
+            "delay_ms": delay_ms,
+            "loss_percent": loss_percent,
+        }
+    )
+    command = (
+        "set -eu; "
+        "iface=$(ip -o -4 addr show | awk -v ip={private_ip} 'index($4, ip \"/\") == 1 {{print $2; exit}}'); "
+        "test -n \"$iface\"; "
+        "tc qdisc replace dev \"$iface\" root netem delay {delay_ms}ms loss {loss_percent}%; "
+        "echo degraded \"$iface\""
+    ).format(
+        private_ip=shlex.quote(private_ip),
+        delay_ms=delay_ms,
+        loss_percent=loss_percent,
+    )
+    ssh(public_ip_for_node(node), command)
+
+
+def cleanup_network_degrade(context: dict[str, Any]) -> None:
+    node = context.get("target_node")
+    private_ip = context.get("private_ip")
+    if not node or not private_ip:
+        return
+    command = (
+        "iface=$(ip -o -4 addr show | awk -v ip={private_ip} 'index($4, ip \"/\") == 1 {{print $2; exit}}'); "
+        "test -z \"$iface\" || tc qdisc del dev \"$iface\" root 2>/dev/null || true"
+    ).format(private_ip=shlex.quote(str(private_ip)))
+    ssh(public_ip_for_node(str(node)), command, check=False)
 
 
 def apply_manifest(manifest: dict[str, Any]) -> None:
@@ -580,6 +639,150 @@ def induce_node_overload(context: dict[str, Any]) -> None:
     )
 
 
+def initialize_conflict_table() -> None:
+    password = os.environ.get("MARIADB_ROOT_PASSWORD")
+    if not password:
+        raise ScenarioError("MARIADB_ROOT_PASSWORD is not set")
+    mysql_env = f"MYSQL_PWD={shlex.quote(password)}"
+    sql = (
+        "CREATE DATABASE IF NOT EXISTS galera_lab_scenarios; "
+        "CREATE TABLE IF NOT EXISTS galera_lab_scenarios.certification_conflict "
+        "(id INT PRIMARY KEY, counter BIGINT NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB; "
+        "INSERT INTO galera_lab_scenarios.certification_conflict "
+        "(id, counter, updated_at) VALUES (1, 0, NOW(6)) "
+        "ON DUPLICATE KEY UPDATE updated_at=VALUES(updated_at);"
+    )
+    for pod in sorted(pod_name(pod) for pod in mariadb_pods()):
+        result = kubectl(
+            [
+                "-n",
+                MARIADB_NAMESPACE,
+                "exec",
+                pod,
+                "-c",
+                "mariadb",
+                "--",
+                "sh",
+                "-c",
+                f"{mysql_env} mariadb -uroot -e " + shlex.quote(sql),
+            ],
+            check=False,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return
+    raise ScenarioError("Could not initialize certification conflict table")
+
+
+def induce_certification_conflict(context: dict[str, Any]) -> None:
+    initialize_conflict_table()
+    pods = mariadb_pods()
+    image = os.environ.get("SCENARIO_CONFLICT_IMAGE")
+    if not image:
+        containers = pods[0].get("spec", {}).get("containers", [])
+        image = next(
+            (
+                container.get("image")
+                for container in containers
+                if container.get("name") == "mariadb" and container.get("image")
+            ),
+            None,
+        )
+    if not image:
+        raise ScenarioError("Could not determine MariaDB image for certification conflict jobs")
+    duration = int(os.environ.get("SCENARIO_CONFLICT_SECONDS", "60"))
+    if duration <= 0:
+        raise ScenarioError("SCENARIO_CONFLICT_SECONDS must be greater than 0")
+    secret_name = os.environ.get("SCENARIO_MARIADB_ROOT_SECRET", "mariadb-root")
+    secret_key = os.environ.get("SCENARIO_MARIADB_ROOT_SECRET_KEY", "root-password")
+    base_name = f"galera-cert-conflict-{int(time.time())}"
+    targets = []
+    shell = (
+        "set -eu; "
+        "deadline=$(( $(date +%s) + ${SCENARIO_CONFLICT_SECONDS:-60} )); "
+        "attempts=0; failures=0; "
+        "while [ \"$(date +%s)\" -lt \"$deadline\" ]; do "
+        "attempts=$((attempts + 1)); "
+        "if MYSQL_PWD=\"$MARIADB_ROOT_PASSWORD\" mariadb -h \"$TARGET_HOST\" -uroot --connect-timeout=3 -e "
+        "\"UPDATE galera_lab_scenarios.certification_conflict "
+        "SET counter = counter + 1, updated_at = NOW(6) WHERE id = 1\" >/dev/null 2>&1; then :; "
+        "else failures=$((failures + 1)); fi; "
+        "done; "
+        "echo attempts=$attempts failures=$failures target=$TARGET_HOST"
+    )
+    for index, pod in enumerate(sorted(pods, key=pod_name)):
+        target_host = pod.get("status", {}).get("podIP")
+        if not target_host:
+            continue
+        job_name = f"{base_name}-{index}"
+        targets.append({"pod": pod_name(pod), "host": target_host, "job": job_name})
+        manifest = {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": job_name,
+                "namespace": MARIADB_NAMESPACE,
+                "labels": {"app.kubernetes.io/name": CONFLICT_LABEL},
+            },
+            "spec": {
+                "backoffLimit": 0,
+                "ttlSecondsAfterFinished": 300,
+                "template": {
+                    "metadata": {"labels": {"app.kubernetes.io/name": CONFLICT_LABEL}},
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "terminationGracePeriodSeconds": 0,
+                        "containers": [
+                            {
+                                "name": "writer",
+                                "image": image,
+                                "imagePullPolicy": "IfNotPresent",
+                                "command": ["sh", "-c", shell],
+                                "env": [
+                                    {"name": "TARGET_HOST", "value": target_host},
+                                    {"name": "SCENARIO_CONFLICT_SECONDS", "value": str(duration)},
+                                    {
+                                        "name": "MARIADB_ROOT_PASSWORD",
+                                        "valueFrom": {
+                                            "secretKeyRef": {"name": secret_name, "key": secret_key}
+                                        },
+                                    },
+                                ],
+                                "resources": {"requests": {"cpu": "10m", "memory": "32Mi"}},
+                            }
+                        ],
+                    },
+                },
+            },
+        }
+        apply_manifest(manifest)
+    if not targets:
+        raise ScenarioError("No ready MariaDB pod IPs found for certification conflict jobs")
+    context.update(
+        {
+            "jobs": [target["job"] for target in targets],
+            "targets": targets,
+            "duration_seconds": duration,
+        }
+    )
+
+
+def cleanup_certification_conflict(context: dict[str, Any]) -> None:
+    kubectl(
+        [
+            "-n",
+            MARIADB_NAMESPACE,
+            "delete",
+            "job",
+            "-l",
+            f"app.kubernetes.io/name={CONFLICT_LABEL}",
+            "--ignore-not-found=true",
+        ],
+        check=False,
+        timeout=60,
+    )
+
+
 SCENARIOS = {
     "pod-delete": {
         "description": "Delete one MariaDB pod and measure replacement/recovery.",
@@ -603,14 +806,31 @@ SCENARIOS = {
     },
     "network-isolate-single": {
         "description": "Drop private network traffic on the worker with the fewest Galera pods.",
-        "induce": induce_network_isolate,
+        "induce": lambda context: induce_network_isolate(context, "single"),
         "self_recovering": False,
+    },
+    "network-isolate-double": {
+        "description": "Drop private network traffic on the worker with the most Galera pods.",
+        "induce": lambda context: induce_network_isolate(context, "double"),
+        "self_recovering": False,
+    },
+    "network-degrade": {
+        "description": "Add latency and packet loss to private traffic on a worker with tc netem.",
+        "induce": induce_network_degrade,
+        "cleanup": cleanup_network_degrade,
+        "self_recovering": True,
     },
     "node-overload-flow-control": {
         "description": "Overload a worker while generating Galera write load to observe flow control.",
         "induce": induce_node_overload,
         "self_recovering": True,
         "write_load": True,
+    },
+    "certification-conflict": {
+        "description": "Run concurrent writes against multiple Galera members to observe certification conflicts.",
+        "induce": induce_certification_conflict,
+        "cleanup": cleanup_certification_conflict,
+        "self_recovering": True,
     },
 }
 
@@ -630,11 +850,20 @@ def run_scenario(name: str, observe_seconds: int, poll_seconds: int, artifact_di
     SCENARIOS[name]["induce"](context)
     result["target"] = context
     result["after_induce"] = collect_status()
-    result["probe"] = probe_window(
-        observe_seconds,
-        poll_seconds,
-        write_load=bool(SCENARIOS[name].get("write_load", False)),
-    )
+    try:
+        result["probe"] = probe_window(
+            observe_seconds,
+            poll_seconds,
+            write_load=bool(SCENARIOS[name].get("write_load", False)),
+        )
+    finally:
+        cleanup = SCENARIOS[name].get("cleanup")
+        if cleanup:
+            try:
+                cleanup(context)
+                result["cleanup"] = {"attempted": True, "ok": True}
+            except ScenarioError as error:
+                result["cleanup"] = {"attempted": True, "ok": False, "error": str(error)}
     if SCENARIOS[name].get("self_recovering", False):
         result["recovery"] = wait_mariadb_ready(poll_seconds=poll_seconds)
     else:

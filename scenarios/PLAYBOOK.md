@@ -72,6 +72,8 @@ SHOW GLOBAL STATUS WHERE Variable_name IN (
   'wsrep_local_recv_queue',
   'wsrep_local_send_queue',
   'wsrep_cert_deps_distance',
+  'wsrep_local_cert_failures',
+  'wsrep_local_bf_aborts',
   'wsrep_apply_window',
   'wsrep_commit_window'
 );"
@@ -88,6 +90,8 @@ Wichtige Signale:
 | `wsrep_flow_control_paused` | nahe `0` | dauerhaft groesser `0` |
 | `wsrep_local_recv_queue` | nahe `0` | wachsend oder dauerhaft hoch |
 | `wsrep_local_send_queue` | nahe `0` | wachsend oder dauerhaft hoch |
+| `wsrep_local_cert_failures` | stabil oder langsam wachsend | deutlicher Anstieg bei konkurrierenden Writes |
+| `wsrep_local_bf_aborts` | stabil oder langsam wachsend | deutlicher Anstieg bei lokalen Transaktionsabbruechen |
 
 Prometheus/Grafana:
 
@@ -283,6 +287,14 @@ make scenario-network
 
 Der Runner blockiert privaten Node-Traffic auf einem Worker mit kommentierten iptables-Regeln.
 
+Quorum-kritische Variante auf dem doppelt belegten Worker:
+
+```bash
+make scenario-network-double
+```
+
+Erwartung im Zwei-Worker-Layout: Die Single-Worker-Variante sollte haeufig einen Primary Component mit zwei erreichbaren Galera-Membern behalten. Die Double-Worker-Variante kann wie der doppelte Node-Ausfall zum Quorum-Verlust fuehren.
+
 Feststellen:
 
 ```bash
@@ -315,6 +327,58 @@ ssh -o UserKnownHostsFile=.artifacts/known_hosts -o StrictHostKeyChecking=accept
 kubectl get nodes
 kubectl -n mariadb get pods -o wide
 ```
+
+## Degradiertes Privates Netzwerk
+
+Ziel: Statt eines harten Netzwerkausfalls kontrollierte Latenz und Paketverlust auf dem privaten Worker-Interface erzeugen.
+
+Ausloesen:
+
+```bash
+make scenario-network-degrade
+```
+
+Parameter:
+
+```bash
+make scenario-network-degrade \
+  NETEM_WORKER=single \
+  NETEM_DELAY_MS=250 \
+  NETEM_LOSS_PERCENT=10 \
+  OBSERVE_SECONDS=90
+```
+
+Feststellen:
+
+```bash
+kubectl -n mariadb get pods -o wide
+kubectl -n mariadb exec -it mariadb-cluster-0 -c mariadb -- mariadb -uroot -p -e "
+SHOW GLOBAL STATUS WHERE Variable_name IN (
+  'wsrep_cluster_status',
+  'wsrep_ready',
+  'wsrep_flow_control_paused',
+  'wsrep_local_recv_queue',
+  'wsrep_local_send_queue',
+  'wsrep_local_state_comment'
+);"
+```
+
+Auf dem Worker:
+
+```bash
+ssh -o UserKnownHostsFile=.artifacts/known_hosts -o StrictHostKeyChecking=accept-new root@<worker-public-ip> 'tc qdisc show'
+```
+
+Der Runner entfernt die `tc netem`-Regel nach der Messung automatisch. Manuelle Reparatur, falls der Lauf abbricht:
+
+```bash
+ssh -o UserKnownHostsFile=.artifacts/known_hosts -o StrictHostKeyChecking=accept-new root@<worker-public-ip> "
+iface=\$(ip -o -4 addr show | awk -v ip='<worker-private-ip>' 'index(\$4, ip \"/\") == 1 {print \$2; exit}')
+test -z \"\$iface\" || tc qdisc del dev \"\$iface\" root 2>/dev/null || true
+"
+```
+
+Danach Galera-Status und Queues pruefen. Interessant sind steigende Queue-Werte, Flow Control und laengere Wiederanlaufzeit ohne vollstaendigen Node-Ausfall.
 
 ## Flow-Control Durch Node-Ueberlast
 
@@ -406,6 +470,51 @@ Wenn der Cluster danach nicht sauber wird, nicht weiter an einzelnen Pods drehen
 ```bash
 make scenario-export
 make stop
+```
+
+## Zertifizierungskonflikte Durch Konkurrierende Writes
+
+Ziel: Mehrere kurzlebige Writer-Jobs schreiben parallel gegen unterschiedliche Galera-Pod-IPs auf dieselbe Tabellenzeile. Dadurch lassen sich Galera-Zertifizierungskonflikte und lokale Abbrueche beobachten, ohne Nodes oder Pods gezielt ausfallen zu lassen.
+
+Ausloesen:
+
+```bash
+make scenario-certification-conflict
+```
+
+Parameter:
+
+```bash
+make scenario-certification-conflict \
+  CERT_CONFLICT_SECONDS=90 \
+  OBSERVE_SECONDS=90
+```
+
+Feststellen:
+
+```bash
+kubectl -n mariadb get jobs,pods -l app.kubernetes.io/name=galera-lab-scenario-conflict
+kubectl -n mariadb logs -l app.kubernetes.io/name=galera-lab-scenario-conflict --tail=50
+kubectl -n mariadb exec -it mariadb-cluster-0 -c mariadb -- mariadb -uroot -p -e "
+SHOW GLOBAL STATUS WHERE Variable_name IN (
+  'wsrep_cluster_status',
+  'wsrep_ready',
+  'wsrep_local_state_comment',
+  'wsrep_local_cert_failures',
+  'wsrep_local_bf_aborts',
+  'wsrep_cert_deps_distance',
+  'wsrep_apply_window',
+  'wsrep_commit_window'
+);"
+```
+
+Erwartung: Der Cluster bleibt `Primary` und `Synced`, waehrend die Konfliktzaehler oder Writer-Fehler steigen koennen. Das Szenario ist damit eher ein Konsistenz- und Lasttest als ein Ausfalltest.
+
+Reparatur:
+
+```bash
+kubectl -n mariadb delete job -l app.kubernetes.io/name=galera-lab-scenario-conflict --ignore-not-found=true
+kubectl -n mariadb get pods -o wide
 ```
 
 ## Abschluss
