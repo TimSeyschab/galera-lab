@@ -74,7 +74,7 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 
 Grafana ist unter <http://127.0.0.1:3000> erreichbar. Benutzername ist `admin`; das Passwort entspricht `GRAFANA_ADMIN_PASSWORD`.
 
-Das Dashboard `MariaDB Galera Lab` zeigt Cluster-Groesse, Ready-/Connected-Members, Pod-Restarts, Flow Control, Replikations-Queues, Apply-/Commit-Fenster, Writesets, Node-CPU, Node-Load, Node-Memory, InnoDB-Buffer-Pool, Connections und Queries.
+Das Dashboard `MariaDB Galera Lab` zeigt Cluster-Groesse, Ready-/Connected-Members, Pod-Restarts, Flow Control, Replikations-Queues, Apply-/Commit-Fenster, Writesets, Node-CPU, Node-Load, Node-Memory, InnoDB-Buffer-Pool, Connections, Queries und den MariaDB-Container-Working-Set.
 
 ### Pods und Cluster pruefen
 
@@ -118,12 +118,13 @@ make scenario-network-double
 make scenario-network-degrade
 make scenario-overload-flow-control
 make scenario-certification-conflict
+make scenario-allocator-memory
 make scenario-export
 ```
 
-Die Ergebnisse werden vor dem Loeschen der Umgebung unter `.artifacts/scenarios/` als JSON exportiert. Enthalten sind Pod- und Node-Zustand, Galera-Status, Quorum-Indikatoren, IST-/SST-Hinweise aus Logs, Wiederanlaufzeit und Probe-Fehlerrate.
+Die Ergebnisse werden vor dem Loeschen der Umgebung unter `.artifacts/scenarios/` als JSON exportiert. Enthalten sind Pod- und Node-Zustand, Galera-Status, Quorum-Indikatoren, IST-/SST-Hinweise aus Logs, Wiederanlaufzeit, Probe-Fehlerrate und Prometheus-Zeitreihen. Die Zeitreihen erfassen MariaDB-Container-Working-Set, RSS, Cache, CPU, CPU-Throttling, Dateisystem-I/O, Threads, Questions/s, InnoDB-Buffer-Pool und Galera-Queues/Flow-Control. Falls Prometheus nicht erreichbar ist, bleibt das Szenario erfolgreich und dokumentiert den Grund im Feld `prometheus`.
 
-`scenario-pod` loescht einen einzelnen Galera-Pod und zeigt Kubernetes-Recreation, StatefulSet-Identitaet, PVC-Wiederverwendung und Galera-Rejoin; die vertiefte Studienhilfe liegt in `scenarios/pod-delete.md`. `scenario-network-double` isoliert den doppelt belegten Worker und macht das Quorum-Risiko des Zwei-Worker-Layouts mit Netzwerkfehlern sichtbar. `scenario-network-degrade` fuegt dem privaten Worker-Interface Latenz und Paketverlust hinzu und entfernt diese Stoerung nach der Messung automatisch. `scenario-overload-flow-control` ueberlastet gezielt einen Worker und erzeugt parallel Schreiblast, damit Flow-Control-Verhalten sichtbar wird; die vertiefte Studienhilfe liegt in `scenarios/overload-flow-control.md`. `scenario-certification-conflict` erzeugt konkurrierende Writes gegen mehrere Galera-Member und misst Zertifizierungskonflikte. Node- und Netzwerk-Szenarien greifen per SSH auf bestehende Worker zu, veraendern aber keine Hetzner-Ressourcen.
+`scenario-pod` loescht einen einzelnen Galera-Pod und zeigt Kubernetes-Recreation, StatefulSet-Identitaet, PVC-Wiederverwendung und Galera-Rejoin; die vertiefte Studienhilfe liegt in `scenarios/pod-delete.md`. `scenario-network-double` isoliert den doppelt belegten Worker und macht das Quorum-Risiko des Zwei-Worker-Layouts mit Netzwerkfehlern sichtbar. `scenario-network-degrade` fuegt dem privaten Worker-Interface Latenz und Paketverlust hinzu und entfernt diese Stoerung nach der Messung automatisch. `scenario-overload-flow-control` ueberlastet gezielt einen Worker und erzeugt parallel Schreiblast, damit Flow-Control-Verhalten sichtbar wird; die vertiefte Studienhilfe liegt in `scenarios/overload-flow-control.md`. `scenario-certification-conflict` erzeugt konkurrierende Writes gegen mehrere Galera-Member und misst Zertifizierungskonflikte. `scenario-allocator-memory` erzeugt und entfernt eine lokale MariaDB-MEMORY-Temporary-Tabelle; zusammen mit `cluster-allocator` und dem neuen Working-Set-Panel vergleicht es system, jemalloc und tcmalloc. Die ausfuehrliche Messanleitung liegt in `scenarios/allocator-memory.md`. Node- und Netzwerk-Szenarien greifen per SSH auf bestehende Worker zu, veraendern aber keine Hetzner-Ressourcen.
 
 ### Vollstaendiger Abbau
 
@@ -147,6 +148,7 @@ Alle Ziele koennen aus dem Repository-Root ausgefuehrt werden. Die fachlichen Ma
 | `make cluster-monitoring` | Prometheus-Stack und Grafana installieren oder aktualisieren |
 | `make cluster-dashboard` | Galera-Dashboard als ConfigMap provisionieren |
 | `make cluster-galera` | MariaDB-Galera-Cluster installieren oder aktualisieren |
+| `make cluster-allocator ALLOCATOR=<system|jemalloc|tcmalloc> ALLOCATOR_IMAGE=<image>` | MariaDB mit einem Allocator-Overlay neu ausrollen |
 | `make cluster-install` | Monitoring und Galera vollstaendig installieren |
 | `make cluster-verify` | MariaDB, Pods, PVCs, Services, Monitoring und Dashboard pruefen |
 
@@ -177,6 +179,7 @@ Versionierte Cluster-Konfiguration:
 | `make scenario-network-degrade` | privaten Netzwerkverkehr mit Latenz und Paketverlust degradieren |
 | `make scenario-overload-flow-control` | Worker-Ueberlast mit Schreiblast fuer Flow-Control-Nachstellung |
 | `make scenario-certification-conflict` | konkurrierende Galera-Writes fuer Zertifizierungskonflikte erzeugen |
+| `make scenario-allocator-memory` | MEMORY-Temporary-Table fuer Allocator-Working-Set-Messung erzeugen und freigeben |
 | `make scenario-export` | aktuellen Cluster-, Galera- und Event-Zustand exportieren |
 
 ### Infrastruktur: `infrastructure/opentofu/`
@@ -285,6 +288,8 @@ galera-lab/
 │   ├── galera/
 │   ├── mariadb-operator/
 │   └── monitoring/
+├── images/
+│   └── mariadb-allocators/
 └── scenarios/
     ├── Makefile
     ├── PLAYBOOK.md

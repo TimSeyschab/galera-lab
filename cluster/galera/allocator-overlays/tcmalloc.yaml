@@ -1,0 +1,8 @@
+# Debian package path supplied by images/mariadb-allocators/Dockerfile.
+mariadb:
+  env:
+    - name: LD_PRELOAD
+      value: /usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4
+  inheritMetadata:
+    labels:
+      lab.galera/allocator: tcmalloc

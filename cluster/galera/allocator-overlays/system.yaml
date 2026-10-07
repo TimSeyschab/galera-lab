@@ -1,0 +1,7 @@
+# Requires the allocator-enabled image from images/mariadb-allocators.
+# No LD_PRELOAD: MariaDB uses the image's default glibc allocator.
+mariadb:
+  env: []
+  inheritMetadata:
+    labels:
+      lab.galera/allocator: system

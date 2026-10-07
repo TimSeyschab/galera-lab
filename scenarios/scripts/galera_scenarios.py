@@ -7,9 +7,12 @@ import argparse
 import json
 import os
 import shlex
+import socket
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +32,48 @@ MARIADB_LABEL = os.environ.get(
 NETWORK_COMMENT = "galera-lab-scenario-network"
 OVERLOAD_LABEL = "galera-lab-scenario-overload"
 CONFLICT_LABEL = "galera-lab-scenario-conflict"
+ALLOCATOR_LABEL = "galera-lab-scenario-allocator-memory"
+PROMETHEUS_SERVICE = os.environ.get("PROMETHEUS_SERVICE", "kube-prometheus-stack-prometheus")
+PROMETHEUS_PORT = 9090
+
+PROMETHEUS_QUERIES = {
+    "container_memory_working_set_bytes": (
+        "sum by (pod) (container_memory_working_set_bytes{namespace=\"mariadb\","
+        "container=\"mariadb\",pod=~\"mariadb-cluster-.*\"})"
+    ),
+    "container_memory_rss_bytes": (
+        "sum by (pod) (container_memory_rss{namespace=\"mariadb\",container=\"mariadb\","
+        "pod=~\"mariadb-cluster-.*\"})"
+    ),
+    "container_memory_cache_bytes": (
+        "sum by (pod) (container_memory_cache{namespace=\"mariadb\",container=\"mariadb\","
+        "pod=~\"mariadb-cluster-.*\"})"
+    ),
+    "container_cpu_usage_seconds_total": (
+        "sum by (pod) (container_cpu_usage_seconds_total{namespace=\"mariadb\","
+        "container=\"mariadb\",pod=~\"mariadb-cluster-.*\"})"
+    ),
+    "container_cpu_cfs_throttled_seconds_total": (
+        "sum by (pod) (container_cpu_cfs_throttled_seconds_total{namespace=\"mariadb\","
+        "container=\"mariadb\",pod=~\"mariadb-cluster-.*\"})"
+    ),
+    "container_fs_reads_bytes_total": (
+        "sum by (pod) (container_fs_reads_bytes_total{namespace=\"mariadb\","
+        "container=\"mariadb\",pod=~\"mariadb-cluster-.*\"})"
+    ),
+    "container_fs_writes_bytes_total": (
+        "sum by (pod) (container_fs_writes_bytes_total{namespace=\"mariadb\","
+        "container=\"mariadb\",pod=~\"mariadb-cluster-.*\"})"
+    ),
+    "mysql_threads_connected": "mysql_global_status_threads_connected",
+    "mysql_threads_running": "mysql_global_status_threads_running",
+    "mysql_questions_per_second": "rate(mysql_global_status_questions[1m])",
+    "innodb_buffer_pool_data_bytes": "mysql_global_status_innodb_buffer_pool_bytes_data",
+    "innodb_buffer_pool_dirty_pages": "mysql_global_status_innodb_buffer_pool_pages_dirty",
+    "galera_flow_control_paused_percent": "100 * mysql_global_status_wsrep_flow_control_paused",
+    "galera_receive_queue": "mysql_global_status_wsrep_local_recv_queue",
+    "galera_send_queue": "mysql_global_status_wsrep_local_send_queue",
+}
 
 
 class ScenarioError(RuntimeError):
@@ -71,6 +116,96 @@ def kubectl_json(args: list[str], *, check: bool = True) -> dict[str, Any]:
     if result.returncode != 0 or not result.stdout.strip():
         return {}
     return json.loads(result.stdout)
+
+
+def free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def prometheus_query_range(
+    endpoint: str, query: str, started_at: float, finished_at: float, step_seconds: int
+) -> list[dict[str, Any]]:
+    parameters = urllib.parse.urlencode(
+        {
+            "query": query,
+            "start": f"{started_at:.3f}",
+            "end": f"{finished_at:.3f}",
+            "step": str(step_seconds),
+        }
+    )
+    with urllib.request.urlopen(f"{endpoint}/api/v1/query_range?{parameters}", timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("status") != "success":
+        raise ScenarioError(f"Prometheus query failed: {payload}")
+    return payload.get("data", {}).get("result", [])
+
+
+def collect_prometheus_timeseries(
+    started_at: float, finished_at: float, poll_seconds: int
+) -> dict[str, Any]:
+    local_port = free_local_port()
+    process = subprocess.Popen(
+        [
+            "kubectl",
+            "-n",
+            MONITORING_NAMESPACE,
+            "port-forward",
+            f"svc/{PROMETHEUS_SERVICE}",
+            f"{local_port}:{PROMETHEUS_PORT}",
+        ],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    endpoint = f"http://127.0.0.1:{local_port}"
+    try:
+        for _ in range(20):
+            if process.poll() is not None:
+                return {"available": False, "reason": "Prometheus port-forward exited early"}
+            try:
+                with urllib.request.urlopen(f"{endpoint}/-/ready", timeout=1):
+                    break
+            except OSError:
+                time.sleep(0.25)
+        else:
+            return {"available": False, "reason": "Prometheus was not reachable through port-forward"}
+
+        series = {}
+        errors = {}
+        for name, query in PROMETHEUS_QUERIES.items():
+            try:
+                series[name] = prometheus_query_range(
+                    endpoint, query, started_at, finished_at, max(1, poll_seconds)
+                )
+            except (OSError, TimeoutError, json.JSONDecodeError, ScenarioError) as error:
+                errors[name] = str(error)
+        return {
+            "available": bool(series),
+            "service": f"{MONITORING_NAMESPACE}/svc/{PROMETHEUS_SERVICE}",
+            "started_at_unix": round(started_at, 3),
+            "finished_at_unix": round(finished_at, 3),
+            "step_seconds": max(1, poll_seconds),
+            "series": series,
+            "errors": errors,
+        }
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+def optional_prometheus_timeseries(
+    started_at: float, finished_at: float, poll_seconds: int
+) -> dict[str, Any]:
+    try:
+        return collect_prometheus_timeseries(started_at, finished_at, poll_seconds)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"available": False, "reason": str(error)}
 
 
 def tofu_output() -> dict[str, Any]:
@@ -425,6 +560,8 @@ def transfer_events(since: str | None = None) -> dict[str, Any]:
 
 def export_snapshot(artifact_dir: Path) -> Path:
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    finished_at_unix = time.time()
+    lookback_seconds = int(os.environ.get("PROMETHEUS_EXPORT_LOOKBACK_SECONDS", "600"))
     snapshot = {
         "timestamp": utc_now(),
         "status": collect_status(),
@@ -432,6 +569,9 @@ def export_snapshot(artifact_dir: Path) -> Path:
         "monitoring_pods": kubectl_json(["-n", MONITORING_NAMESPACE, "get", "pods"], check=False),
         "events": kubectl_json(["get", "events", "-A"], check=False),
         "transfer_events": transfer_events(),
+        "prometheus": optional_prometheus_timeseries(
+            finished_at_unix - max(1, lookback_seconds), finished_at_unix, poll_seconds=15
+        ),
     }
     path = artifact_dir / f"export-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
     path.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -783,6 +923,135 @@ def cleanup_certification_conflict(context: dict[str, Any]) -> None:
     )
 
 
+def induce_allocator_memory(context: dict[str, Any]) -> None:
+    allocator = os.environ.get("SCENARIO_ALLOCATOR", "system")
+    if allocator not in {"system", "jemalloc", "tcmalloc"}:
+        raise ScenarioError("SCENARIO_ALLOCATOR must be 'system', 'jemalloc', or 'tcmalloc'")
+    load_seconds = int(os.environ.get("SCENARIO_ALLOCATOR_LOAD_SECONDS", "120"))
+    hold_seconds = int(os.environ.get("SCENARIO_ALLOCATOR_HOLD_SECONDS", "60"))
+    rows = int(os.environ.get("SCENARIO_ALLOCATOR_ROWS", "20000"))
+    payload_bytes = int(os.environ.get("SCENARIO_ALLOCATOR_PAYLOAD_BYTES", "2048"))
+    if (
+        load_seconds < 1
+        or hold_seconds < 0
+        or not 1 <= rows <= 99999
+        or not 1 <= payload_bytes <= 8192
+    ):
+        raise ScenarioError("Allocator duration, rows, or payload size is outside the supported range")
+    pods = mariadb_pods()
+    target = next(
+        (pod for pod in sorted(pods, key=pod_name) if pod.get("status", {}).get("podIP")),
+        None,
+    )
+    if not target:
+        raise ScenarioError("No MariaDB pod with an IP is available for allocator measurement")
+    image = next(
+        (
+            container.get("image")
+            for container in target.get("spec", {}).get("containers", [])
+            if container.get("name") == "mariadb"
+        ),
+        None,
+    )
+    if not image:
+        raise ScenarioError("Could not determine the MariaDB image for allocator measurement")
+    job_name = f"galera-allocator-memory-{int(time.time())}"
+    digits = " UNION ALL ".join(f"SELECT {index} AS n" for index in range(10))
+    sql = (
+        "SET SESSION max_heap_table_size = 536870912; "
+        "USE mysql; "
+        "CREATE TEMPORARY TABLE allocator_memory_probe "
+        "(id INT PRIMARY KEY, payload VARBINARY(8192)) ENGINE=MEMORY; "
+        "INSERT INTO allocator_memory_probe (id, payload) "
+        f"SELECT a.n + 10*b.n + 100*c.n + 1000*d.n + 10000*e.n, "
+        f"REPEAT('x', {payload_bytes}) FROM ({digits}) a CROSS JOIN ({digits}) b "
+        f"CROSS JOIN ({digits}) c CROSS JOIN ({digits}) d CROSS JOIN ({digits}) e "
+        f"LIMIT {rows}; "
+        f"SELECT SLEEP({load_seconds}); "
+        "DROP TEMPORARY TABLE allocator_memory_probe; "
+        f"SELECT SLEEP({hold_seconds});"
+    )
+    manifest = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": job_name,
+            "namespace": MARIADB_NAMESPACE,
+            "labels": {"app.kubernetes.io/name": ALLOCATOR_LABEL},
+        },
+        "spec": {
+            "backoffLimit": 0,
+            "ttlSecondsAfterFinished": 300,
+            "template": {
+                "metadata": {"labels": {"app.kubernetes.io/name": ALLOCATOR_LABEL}},
+                "spec": {
+                    "nodeName": pod_node(target),
+                    "restartPolicy": "Never",
+                    "containers": [
+                        {
+                            "name": "allocator-memory",
+                            "image": image,
+                            "imagePullPolicy": "IfNotPresent",
+                            "command": [
+                                "sh",
+                                "-c",
+                                "exec mariadb -h \"$TARGET_HOST\" -uroot -e \"$ALLOCATOR_SQL\"",
+                            ],
+                            "env": [
+                                {"name": "TARGET_HOST", "value": target["status"]["podIP"]},
+                                {"name": "ALLOCATOR_SQL", "value": sql},
+                                {
+                                    "name": "MYSQL_PWD",
+                                    "valueFrom": {
+                                        "secretKeyRef": {
+                                            "name": os.environ.get(
+                                                "SCENARIO_MARIADB_ROOT_SECRET", "mariadb-root"
+                                            ),
+                                            "key": os.environ.get(
+                                                "SCENARIO_MARIADB_ROOT_SECRET_KEY", "root-password"
+                                            ),
+                                        }
+                                    },
+                                },
+                            ],
+                            "resources": {"requests": {"cpu": "10m", "memory": "32Mi"}},
+                        }
+                    ],
+                },
+            },
+        },
+    }
+    apply_manifest(manifest)
+    context.update(
+        {
+            "allocator": allocator,
+            "job": job_name,
+            "target_pod": pod_name(target),
+            "target_host": target["status"]["podIP"],
+            "load_seconds": load_seconds,
+            "hold_seconds": hold_seconds,
+            "rows": rows,
+            "payload_bytes": payload_bytes,
+        }
+    )
+
+
+def cleanup_allocator_memory(context: dict[str, Any]) -> None:
+    kubectl(
+        [
+            "-n",
+            MARIADB_NAMESPACE,
+            "delete",
+            "job",
+            "-l",
+            f"app.kubernetes.io/name={ALLOCATOR_LABEL}",
+            "--ignore-not-found=true",
+        ],
+        check=False,
+        timeout=60,
+    )
+
+
 SCENARIOS = {
     "pod-delete": {
         "description": "Delete one MariaDB pod and measure replacement/recovery.",
@@ -832,6 +1101,12 @@ SCENARIOS = {
         "cleanup": cleanup_certification_conflict,
         "self_recovering": True,
     },
+    "allocator-memory": {
+        "description": "Allocate and release MariaDB MEMORY temporary-table data for allocator comparison.",
+        "induce": induce_allocator_memory,
+        "cleanup": cleanup_allocator_memory,
+        "self_recovering": True,
+    },
 }
 
 
@@ -840,6 +1115,7 @@ def run_scenario(name: str, observe_seconds: int, poll_seconds: int, artifact_di
         raise ScenarioError(f"Unknown scenario: {name}")
     artifact_dir.mkdir(parents=True, exist_ok=True)
     context: dict[str, Any] = {}
+    started_at_unix = time.time()
     started_at = utc_now()
     result: dict[str, Any] = {
         "scenario": name,
@@ -873,6 +1149,10 @@ def run_scenario(name: str, observe_seconds: int, poll_seconds: int, artifact_di
         }
     result["after_observation"] = collect_status()
     result["transfer_events"] = transfer_events(started_at)
+    finished_at_unix = time.time()
+    result["prometheus"] = optional_prometheus_timeseries(
+        started_at_unix, finished_at_unix, poll_seconds
+    )
     result["finished_at"] = utc_now()
     path = artifact_dir / f"{name}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
     path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")

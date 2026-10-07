@@ -18,13 +18,18 @@ NETEM_WORKER ?= single
 NETEM_DELAY_MS ?= 250
 NETEM_LOSS_PERCENT ?= 10
 CERT_CONFLICT_SECONDS ?= 60
+ALLOCATOR ?= system
+ALLOCATOR_LOAD_SECONDS ?= 120
+ALLOCATOR_HOLD_SECONDS ?= 60
+ALLOCATOR_ROWS ?= 20000
+ALLOCATOR_PAYLOAD_BYTES ?= 2048
 
 -include ../.env
 export KUBECONFIG
 export ANSIBLE_PRIVATE_KEY_FILE
 export MARIADB_ROOT_PASSWORD
 
-.PHONY: list run pod process network network-double network-degrade node-single node-double overload-flow-control certification-conflict export
+.PHONY: list run pod process network network-double network-degrade node-single node-double overload-flow-control certification-conflict allocator-memory export
 
 list:
 	$(SCENARIO_RUNNER) list
@@ -67,6 +72,14 @@ overload-flow-control:
 certification-conflict:
 	SCENARIO_CONFLICT_SECONDS=$(CERT_CONFLICT_SECONDS) \
 	$(MAKE) run SCENARIO=certification-conflict
+
+allocator-memory:
+	SCENARIO_ALLOCATOR=$(ALLOCATOR) \
+	SCENARIO_ALLOCATOR_LOAD_SECONDS=$(ALLOCATOR_LOAD_SECONDS) \
+	SCENARIO_ALLOCATOR_HOLD_SECONDS=$(ALLOCATOR_HOLD_SECONDS) \
+	SCENARIO_ALLOCATOR_ROWS=$(ALLOCATOR_ROWS) \
+	SCENARIO_ALLOCATOR_PAYLOAD_BYTES=$(ALLOCATOR_PAYLOAD_BYTES) \
+	$(SCENARIO_RUNNER) run allocator-memory --observe-seconds $$(( $(ALLOCATOR_LOAD_SECONDS) + $(ALLOCATOR_HOLD_SECONDS) + 120 )) --poll-seconds $(POLL_SECONDS) --artifact-dir $(ARTIFACT_DIR)
 
 export:
 	$(SCENARIO_RUNNER) export --artifact-dir $(ARTIFACT_DIR)

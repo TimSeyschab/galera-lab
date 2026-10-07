@@ -12,7 +12,7 @@ KUBECTL ?= kubectl
 ANSIBLE_PRIVATE_KEY_FILE ?= $(HOME)/.ssh/hetzner_galera_lab
 export ANSIBLE_PRIVATE_KEY_FILE
 
-.PHONY: start preflight stop destroy clean-local tofu-tfvars tofu-refresh-admin-cidr tofu-fmt tofu-init tofu-validate tofu-plan tofu-check tflint ansible-inventory ansible-check ansible-bootstrap ansible-kubeconfig k3s-tunnel cluster-repos cluster-operator cluster-monitoring cluster-galera cluster-dashboard cluster-install cluster-verify scenarios-list scenario scenario-pod scenario-process scenario-network scenario-network-double scenario-network-degrade scenario-node-single scenario-node-double scenario-overload-flow-control scenario-certification-conflict scenario-export
+.PHONY: start preflight stop destroy clean-local tofu-tfvars tofu-refresh-admin-cidr tofu-fmt tofu-init tofu-validate tofu-plan tofu-check tflint ansible-inventory ansible-check ansible-bootstrap ansible-kubeconfig k3s-tunnel cluster-repos cluster-operator cluster-monitoring cluster-galera cluster-dashboard cluster-install cluster-verify cluster-allocator scenarios-list scenario scenario-pod scenario-process scenario-network scenario-network-double scenario-network-degrade scenario-node-single scenario-node-double scenario-overload-flow-control scenario-certification-conflict scenario-allocator-memory scenario-export
 
 preflight:
 	@test -n "$${HCLOUD_TOKEN:-}" || (echo "HCLOUD_TOKEN must be exported" >&2; exit 1)
@@ -107,6 +107,9 @@ cluster-monitoring:
 cluster-galera:
 	$(MAKE) -C $(CLUSTER_DIR) galera
 
+cluster-allocator:
+	$(MAKE) -C $(CLUSTER_DIR) allocator
+
 cluster-dashboard:
 	$(MAKE) -C $(CLUSTER_DIR) dashboard
 
@@ -148,6 +151,9 @@ scenario-overload-flow-control:
 
 scenario-certification-conflict:
 	$(MAKE) -C $(SCENARIOS_DIR) certification-conflict
+
+scenario-allocator-memory:
+	$(MAKE) -C $(SCENARIOS_DIR) allocator-memory
 
 scenario-export:
 	$(MAKE) -C $(SCENARIOS_DIR) export

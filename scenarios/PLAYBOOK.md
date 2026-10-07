@@ -117,6 +117,7 @@ Im Dashboard `MariaDB Galera Lab` besonders auf diese Panels achten:
 | `Node CPU Busy` | CPU-Saettigung des ueberlasteten Workers |
 | `Node Load Per CPU` | Run-Queue-Druck relativ zur CPU-Anzahl |
 | `Node Memory Used` | Speicherdruck als Nebenursache |
+| `MariaDB Container Memory Working Set` | cgroup-Working-Set des MariaDB-Containers pro Pod; fuer Allocator-Vergleiche Baseline, Peak und Recovery vergleichen |
 
 ## Pod-Ausfall
 
@@ -515,6 +516,34 @@ Reparatur:
 ```bash
 kubectl -n mariadb delete job -l app.kubernetes.io/name=galera-lab-scenario-conflict --ignore-not-found=true
 kubectl -n mariadb get pods -o wide
+```
+
+## Memory-Allocator-Vergleich
+
+Ziel: Den Default-Systemallocator, jemalloc und tcmalloc bei identischer MariaDB-Version vergleichen. Das Szenario befuellt eine lokale `TEMPORARY`-Tabelle mit `ENGINE=MEMORY`, behaelt sie fuer eine feste Dauer und entfernt sie wieder. Gemessen wird ausschliesslich `container_memory_working_set_bytes` des MariaDB-Containers.
+
+```bash
+export ALLOCATOR_IMAGE=registry.example/galera/mariadb-allocators:<tag>
+
+make cluster-allocator ALLOCATOR=system ALLOCATOR_IMAGE="$ALLOCATOR_IMAGE"
+make scenario-allocator-memory ALLOCATOR=system
+
+make cluster-allocator ALLOCATOR=jemalloc ALLOCATOR_IMAGE="$ALLOCATOR_IMAGE"
+make scenario-allocator-memory ALLOCATOR=jemalloc
+
+make cluster-allocator ALLOCATOR=tcmalloc ALLOCATOR_IMAGE="$ALLOCATOR_IMAGE"
+make scenario-allocator-memory ALLOCATOR=tcmalloc
+```
+
+`cluster-allocator` rollt MariaDB/Galera bewusst neu aus. Nach jedem Wechsel muessen alle Member wieder `Synced` und `wsrep_ready=ON` sein, bevor der naechste Lauf startet. Im Grafana-Panel **MariaDB Container Memory Working Set** pro Lauf Baseline, Peak, Wert direkt nach `DROP TEMPORARY TABLE` und Zeit bis zur Rueckkehr in die Naehe der Baseline notieren.
+
+Abbruch und Artefaktsicherung:
+
+```bash
+kubectl -n mariadb delete job \
+  -l app.kubernetes.io/name=galera-lab-scenario-allocator-memory \
+  --ignore-not-found=true
+make scenario-export
 ```
 
 ## Abschluss

@@ -18,8 +18,10 @@ MONITORING_NAMESPACE ?= monitoring
 MARIADB_ROOT_SECRET ?= mariadb-root
 GRAFANA_ADMIN_SECRET ?= grafana-admin
 GRAFANA_ADMIN_USER ?= admin
+ALLOCATOR ?= system
+ALLOCATOR_IMAGE ?=
 
-.PHONY: repos namespaces secret grafana-secret dashboard operator monitoring galera install verify
+.PHONY: repos namespaces secret grafana-secret dashboard operator monitoring galera allocator install verify
 
 repos:
 	$(HELM) repo add mariadb-operator $(MARIADB_OPERATOR_REPO) --force-update
@@ -50,6 +52,12 @@ monitoring: repos grafana-secret dashboard
 
 galera: operator secret
 	KUBECONFIG=$(KUBECONFIG) $(HELM) upgrade --install mariadb-cluster mariadb-operator/mariadb-cluster --namespace $(MARIADB_NAMESPACE) --version $(MARIADB_OPERATOR_VERSION) --values galera/values.yaml --wait
+
+allocator: operator secret
+	@test -n "$(ALLOCATOR_IMAGE)" || (echo "ALLOCATOR_IMAGE must name the image built from images/mariadb-allocators" >&2; exit 1)
+	@test -f "galera/allocator-overlays/$(ALLOCATOR).yaml" || (echo "ALLOCATOR must be one of: system, jemalloc, tcmalloc" >&2; exit 1)
+	@echo "Changing the allocator restarts MariaDB/Galera pods. Run one allocator at a time and wait for Synced before measuring."
+	KUBECONFIG=$(KUBECONFIG) $(HELM) upgrade --install mariadb-cluster mariadb-operator/mariadb-cluster --namespace $(MARIADB_NAMESPACE) --version $(MARIADB_OPERATOR_VERSION) --values galera/values.yaml --values galera/allocator-overlays/$(ALLOCATOR).yaml --set-string mariadb.image=$(ALLOCATOR_IMAGE) --force-conflicts --wait
 
 install: monitoring galera
 
